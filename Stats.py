@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import sqlite3
 from datetime import datetime, timedelta
@@ -5,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
+
 
 # =========================
 # 基本設定
@@ -36,7 +39,28 @@ def init_db():
         );
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user_started ON sessions(user_id, started_at_utc);")
+                # 追加：各操作（開始/再開/一時停止/リセット/完了）を時刻で残すイベントログ
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS session_events (
+            event_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id   INTEGER NOT NULL,
+            event_type   TEXT NOT NULL,        -- 'start'|'resume'|'pause'|'reset'|'finish'
+            event_at_utc TEXT NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+        );
+        """) #★追加
         conn.commit()
+
+# --- ② イベントを1行で刻むシンプル関数 ---
+
+def log_event(session_id: int, event_type: str, event_at_utc: datetime):
+    """開始/再開/一時停止/リセット/完了 などのイベントをUTC時刻で記録"""
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO session_events (session_id, event_type, event_at_utc) VALUES (?, ?, ?)",
+            (session_id, event_type, event_at_utc.isoformat()),
+        )
+        conn.commit()  #★追加
 
 def insert_session_start(user_id: int, started_at_utc: datetime):
     with get_conn() as conn:
@@ -134,92 +158,93 @@ def fmt_hms(total_seconds: int) -> str:
     else:
         return f"{s}秒"
 
-# =========================
-# Streamlit UI
-# =========================
-st.set_page_config(page_title="学習ポモドーロ（記録＆指標）", page_icon="⏱️", layout="centered")
-st.title("⏱️ 学習ポモドーロ（記録＆指標）")
+    # =========================
+    # Streamlit UI
+    # =========================
+def run():
+    st.set_page_config(page_title="学習ポモドーロ（記録＆指標）", page_icon="⏱️", layout="centered")
+    st.title("⏱️ 学習ポモドーロ（記録＆指標）")
 
-init_db()
+    init_db()
 
-# シンプルに単一ユーザー（将来ログインに置換可）
-USER_ID = 1
+    # シンプルに単一ユーザー（将来ログインに置換可）
+    USER_ID = 1
 
-# セッション状態
-if "active_session_id" not in st.session_state:
-    st.session_state.active_session_id = None
-if "started_at_utc" not in st.session_state:
-    st.session_state.started_at_utc = None
-
-# ==== ステータス表示 ====
-df = load_all_sessions(USER_ID)
-metrics = compute_metrics(df)
-
-col1, col2, col3 = st.columns(3)
-col1.metric("連続日数", f"{metrics['streak_days']} 日")
-col2.metric("直近7日の学習", fmt_hms(metrics["last7_seconds"]))
-col3.metric("総学習時間", fmt_hms(metrics["total_seconds"]))
-
-st.caption("※ タイムゾーンは Asia/Tokyo で日付判定しています。")
-
-# ==== 操作パネル ====
-st.subheader("ポモドーロ操作")
-DEFAULT_FOCUS_MIN = 25
-DEFAULT_BREAK_MIN = 5
-
-with st.form("control"):
-    focus_min = st.number_input("集中（分）", min_value=5, max_value=120, value=DEFAULT_FOCUS_MIN, step=5)
-    note = st.text_input("メモ（任意）", value="")
-    submitted = st.form_submit_button("▶ 開始（Start）", disabled=st.session_state.active_session_id is not None)
-
-if submitted and st.session_state.active_session_id is None:
-    started = datetime.now(tz=ZoneInfo("UTC"))
-    session_id = insert_session_start(USER_ID, started)
-    st.session_state.active_session_id = session_id
-    st.session_state.started_at_utc = started
-    st.toast("セッションを開始しました。集中していきましょう！💪", icon="✅")
-
-# アクティブ中の表示と停止ボタン
-if st.session_state.active_session_id is not None:
-    started_local = _to_local(pd.Timestamp(st.session_state.started_at_utc))
-    elapsed = (datetime.now(tz=ZoneInfo("UTC")) - st.session_state.started_at_utc).total_seconds()
-    st.info(f"進行中：{started_local.strftime('%Y-%m-%d %H:%M:%S')} 開始 / 経過 {fmt_hms(int(elapsed))}")
-    if st.button("■ 終了（Finish）", type="primary"):
-        finished_utc = datetime.now(tz=ZoneInfo("UTC"))
-        focus_seconds = int((finished_utc - st.session_state.started_at_utc).total_seconds())
-        finish_session(st.session_state.active_session_id, finished_utc, focus_seconds)
-        # メモがあれば更新（note列を簡易更新）
-        if note:
-            with get_conn() as conn:
-                conn.execute("UPDATE sessions SET note = ? WHERE session_id = ?", (note, st.session_state.active_session_id))
-                conn.commit()
+    # セッション状態
+    if "active_session_id" not in st.session_state:
         st.session_state.active_session_id = None
+    if "started_at_utc" not in st.session_state:
         st.session_state.started_at_utc = None
-        st.success("セッションを保存しました。おつかれさま！🎉")
-        # 指標を更新
-        df = load_all_sessions(USER_ID)
-        metrics = compute_metrics(df)
 
-st.divider()
+    # ==== ステータス表示 ====
+    df = load_all_sessions(USER_ID)
+    metrics = compute_metrics(df)
 
-# ==== 履歴テーブル ====
-st.subheader("学習履歴（直近）")
-if df.empty:
-    st.write("まだ記録がありません。上でセッションを開始してみましょう。")
-else:
-    # 表示用にローカルタイムへ変換
-    show = df.copy()
-    show["started_local"] = show["started_at_utc"].dt.tz_convert(APP_TZ).dt.strftime("%Y-%m-%d %H:%M:%S")
-    show["finished_local"] = show["finished_at_utc"].dt.tz_convert(APP_TZ).dt.strftime("%Y-%m-%d %H:%M:%S")
-    show["focus_time"] = show["focus_seconds"].apply(fmt_hms)
-    show = show[["session_id", "started_local", "finished_local", "focus_time", "note"]].sort_values("session_id", ascending=False)
-    st.dataframe(show, use_container_width=True)
+    col1, col2, col3 = st.columns(3)
+    col1.metric("連続日数", f"{metrics['streak_days']} 日")
+    col2.metric("直近7日の学習", fmt_hms(metrics["last7_seconds"]))
+    col3.metric("総学習時間", fmt_hms(metrics["total_seconds"]))
 
-# ==== 日次サマリ ====
-if not metrics["by_day"].empty:
-    st.subheader("日次サマリ")
-    day = metrics["by_day"].copy()
-    day["date"] = pd.to_datetime(day["local_date"])
-    day["hours"] = (day["focus_seconds"] / 3600).round(2)
-    st.bar_chart(day.set_index("date")["hours"])
-    st.caption("棒グラフ：各日の学習時間（時間）")
+    st.caption("※ タイムゾーンは Asia/Tokyo で日付判定しています。")
+
+    # ==== 操作パネル ====
+    st.subheader("ポモドーロ操作")
+    DEFAULT_FOCUS_MIN = 25
+    DEFAULT_BREAK_MIN = 5
+
+    with st.form("control"):
+        focus_min = st.number_input("集中（分）", min_value=5, max_value=120, value=DEFAULT_FOCUS_MIN, step=5)
+        note = st.text_input("メモ（任意）", value="")
+        submitted = st.form_submit_button("▶ 開始（Start）", disabled=st.session_state.active_session_id is not None)
+
+    if submitted and st.session_state.active_session_id is None:
+        started = datetime.now(tz=ZoneInfo("UTC"))
+        session_id = insert_session_start(USER_ID, started)
+        st.session_state.active_session_id = session_id
+        st.session_state.started_at_utc = started
+        st.toast("セッションを開始しました。集中していきましょう！💪", icon="✅")
+
+    # アクティブ中の表示と停止ボタン
+    if st.session_state.active_session_id is not None:
+        started_local = _to_local(pd.Timestamp(st.session_state.started_at_utc))
+        elapsed = (datetime.now(tz=ZoneInfo("UTC")) - st.session_state.started_at_utc).total_seconds()
+        st.info(f"進行中：{started_local.strftime('%Y-%m-%d %H:%M:%S')} 開始 / 経過 {fmt_hms(int(elapsed))}")
+        if st.button("■ 終了（Finish）", type="primary"):
+            finished_utc = datetime.now(tz=ZoneInfo("UTC"))
+            focus_seconds = int((finished_utc - st.session_state.started_at_utc).total_seconds())
+            finish_session(st.session_state.active_session_id, finished_utc, focus_seconds)
+            # メモがあれば更新（note列を簡易更新）
+            if note:
+                with get_conn() as conn:
+                    conn.execute("UPDATE sessions SET note = ? WHERE session_id = ?", (note, st.session_state.active_session_id))
+                    conn.commit()
+            st.session_state.active_session_id = None
+            st.session_state.started_at_utc = None
+            st.success("セッションを保存しました。おつかれさま！🎉")
+            # 指標を更新
+            df = load_all_sessions(USER_ID)
+            metrics = compute_metrics(df)
+
+    st.divider()
+
+    # ==== 履歴テーブル ====
+    st.subheader("学習履歴（直近）")
+    if df.empty:
+        st.write("まだ記録がありません。上でセッションを開始してみましょう。")
+    else:
+        # 表示用にローカルタイムへ変換
+        show = df.copy()
+        show["started_local"] = show["started_at_utc"].dt.tz_convert(APP_TZ).dt.strftime("%Y-%m-%d %H:%M:%S")
+        show["finished_local"] = show["finished_at_utc"].dt.tz_convert(APP_TZ).dt.strftime("%Y-%m-%d %H:%M:%S")
+        show["focus_time"] = show["focus_seconds"].apply(fmt_hms)
+        show = show[["session_id", "started_local", "finished_local", "focus_time", "note"]].sort_values("session_id", ascending=False)
+        st.dataframe(show, use_container_width=True)
+
+    # ==== 日次サマリ ====
+    if not metrics["by_day"].empty:
+        st.subheader("日次サマリ")
+        day = metrics["by_day"].copy()
+        day["date"] = pd.to_datetime(day["local_date"])
+        day["hours"] = (day["focus_seconds"] / 3600).round(2)
+        st.bar_chart(day.set_index("date")["hours"])
+        st.caption("棒グラフ：各日の学習時間（時間）")
