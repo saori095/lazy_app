@@ -219,7 +219,7 @@ def run():
 
     # --- メイン画面の表示 ---
     st.set_page_config(page_title="タスク分割", page_icon="📝")
-    st.title("タスク分割 & 称賛ページ")
+    st.title("💎タスク分割 & 称賛ページ")
 
     setup_database()
 

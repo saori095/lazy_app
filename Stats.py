@@ -158,12 +158,14 @@ def fmt_hms(total_seconds: int) -> str:
     else:
         return f"{s}秒"
 
+
+
     # =========================
     # Streamlit UI
     # =========================
 def run():
-    st.set_page_config(page_title="学習ポモドーロ（記録＆指標）", page_icon="⏱️", layout="centered")
-    st.title("⏱️ 学習ポモドーロ（記録＆指標）")
+    st.set_page_config(page_title="Lazy_app", page_icon="⏱️", layout="centered")
+    st.title("⏱️ 学習ダッシュボード")
 
     init_db()
 
@@ -185,50 +187,88 @@ def run():
     col2.metric("直近7日の学習", fmt_hms(metrics["last7_seconds"]))
     col3.metric("総学習時間", fmt_hms(metrics["total_seconds"]))
 
-    st.caption("※ タイムゾーンは Asia/Tokyo で日付判定しています。")
+    # st.caption("※ タイムゾーンは Asia/Tokyo で日付判定しています。")
 
     # ==== 操作パネル ====
-    st.subheader("ポモドーロ操作")
-    DEFAULT_FOCUS_MIN = 25
-    DEFAULT_BREAK_MIN = 5
+    # st.subheader("ポモドーロ操作")
+    # DEFAULT_FOCUS_MIN = 25
+    # DEFAULT_BREAK_MIN = 5
 
-    with st.form("control"):
-        focus_min = st.number_input("集中（分）", min_value=5, max_value=120, value=DEFAULT_FOCUS_MIN, step=5)
-        note = st.text_input("メモ（任意）", value="")
-        submitted = st.form_submit_button("▶ 開始（Start）", disabled=st.session_state.active_session_id is not None)
+    # with st.form("control"):
+    #     focus_min = st.number_input("集中（分）", min_value=5, max_value=120, value=DEFAULT_FOCUS_MIN, step=5)
+    #     note = st.text_input("メモ（任意）", value="")
+    #     submitted = st.form_submit_button("▶ 開始（Start）", disabled=st.session_state.active_session_id is not None)
 
-    if submitted and st.session_state.active_session_id is None:
-        started = datetime.now(tz=ZoneInfo("UTC"))
-        session_id = insert_session_start(USER_ID, started)
-        st.session_state.active_session_id = session_id
-        st.session_state.started_at_utc = started
-        st.toast("セッションを開始しました。集中していきましょう！💪", icon="✅")
+    # if submitted and st.session_state.active_session_id is None:
+    #     started = datetime.now(tz=ZoneInfo("UTC"))
+    #     session_id = insert_session_start(USER_ID, started)
+    #     st.session_state.active_session_id = session_id
+    #     st.session_state.started_at_utc = started
+    #     st.toast("セッションを開始しました。集中していきましょう！💪", icon="✅")
 
-    # アクティブ中の表示と停止ボタン
-    if st.session_state.active_session_id is not None:
-        started_local = _to_local(pd.Timestamp(st.session_state.started_at_utc))
-        elapsed = (datetime.now(tz=ZoneInfo("UTC")) - st.session_state.started_at_utc).total_seconds()
-        st.info(f"進行中：{started_local.strftime('%Y-%m-%d %H:%M:%S')} 開始 / 経過 {fmt_hms(int(elapsed))}")
-        if st.button("■ 終了（Finish）", type="primary"):
-            finished_utc = datetime.now(tz=ZoneInfo("UTC"))
-            focus_seconds = int((finished_utc - st.session_state.started_at_utc).total_seconds())
-            finish_session(st.session_state.active_session_id, finished_utc, focus_seconds)
-            # メモがあれば更新（note列を簡易更新）
-            if note:
-                with get_conn() as conn:
-                    conn.execute("UPDATE sessions SET note = ? WHERE session_id = ?", (note, st.session_state.active_session_id))
-                    conn.commit()
-            st.session_state.active_session_id = None
-            st.session_state.started_at_utc = None
-            st.success("セッションを保存しました。おつかれさま！🎉")
-            # 指標を更新
-            df = load_all_sessions(USER_ID)
-            metrics = compute_metrics(df)
+    # # アクティブ中の表示と停止ボタン
+    # if st.session_state.active_session_id is not None:
+    #     started_local = _to_local(pd.Timestamp(st.session_state.started_at_utc))
+    #     elapsed = (datetime.now(tz=ZoneInfo("UTC")) - st.session_state.started_at_utc).total_seconds()
+    #     st.info(f"進行中：{started_local.strftime('%Y-%m-%d %H:%M:%S')} 開始 / 経過 {fmt_hms(int(elapsed))}")
+    #     if st.button("■ 終了（Finish）", type="primary"):
+    #         finished_utc = datetime.now(tz=ZoneInfo("UTC"))
+    #         focus_seconds = int((finished_utc - st.session_state.started_at_utc).total_seconds())
+    #         finish_session(st.session_state.active_session_id, finished_utc, focus_seconds)
+    #         # メモがあれば更新（note列を簡易更新）
+    #         if note:
+    #             with get_conn() as conn:
+    #                 conn.execute("UPDATE sessions SET note = ? WHERE session_id = ?", (note, st.session_state.active_session_id))
+    #                 conn.commit()
+    #         st.session_state.active_session_id = None
+    #         st.session_state.started_at_utc = None
+    #         st.success("セッションを保存しました。おつかれさま！🎉")
+    #         # 指標を更新
+    #         df = load_all_sessions(USER_ID)
+    #         metrics = compute_metrics(df)
 
-    st.divider()
+    # st.divider()
 
-    # ==== 履歴テーブル ====
-    st.subheader("学習履歴（直近）")
+
+    # ==== 直近7日・曜日別サマリ ====
+    if not metrics["by_day"].empty:
+        st.subheader("週次サマリ（直近7日）")
+
+        day = metrics["by_day"].copy()
+
+        # 直近7日（今日含む）の範囲に絞る（JST基準）
+        today_local = datetime.now(APP_TZ).date()
+        seven_days_ago = today_local - timedelta(days=6)
+
+        # local_date を日付の Datetime に統一（時刻は 00:00 に正規化）
+        day["local_date"] = pd.to_datetime(day["local_date"]).dt.normalize()
+
+        # 直近7日のデータだけ抽出（← これが無かったのでエラーになっていました）
+        mask = (day["local_date"] >= pd.to_datetime(seven_days_ago)) & \
+            (day["local_date"] <= pd.to_datetime(today_local))
+        last7 = day.loc[mask].copy()
+
+        # 直近7日の連続日付インデックスを作る（欠けは0で補完）
+        idx = pd.date_range(seven_days_ago, today_local, freq="D")  # DatetimeIndex
+
+        sec_by_date = (
+            last7.set_index("local_date")["focus_seconds"]
+                .groupby(level=0).sum()         # 同日が複数行でも日単位に合算
+                .reindex(idx, fill_value=0)      # 欠測日は0で補完
+        )
+
+        # 秒→分に換算し、横軸ラベル「Mon (09/23)」を付与
+        minutes_by_date = (sec_by_date / 60).round(1)
+        labels = [d.strftime("%a (%m/%d)") for d in minutes_by_date.index]
+        minutes_by_date.index = labels
+
+        st.bar_chart(minutes_by_date)
+        st.caption(
+            f"対象: {seven_days_ago.strftime('%Y-%m-%d')} 〜 {today_local.strftime('%Y-%m-%d')}（JST）／単位：分"
+        )
+
+            # ==== 履歴テーブル ====
+    st.subheader("学習履歴（直近7日間）")
     if df.empty:
         st.write("まだ記録がありません。上でセッションを開始してみましょう。")
     else:
@@ -239,12 +279,3 @@ def run():
         show["focus_time"] = show["focus_seconds"].apply(fmt_hms)
         show = show[["session_id", "started_local", "finished_local", "focus_time", "note"]].sort_values("session_id", ascending=False)
         st.dataframe(show, use_container_width=True)
-
-    # ==== 日次サマリ ====
-    if not metrics["by_day"].empty:
-        st.subheader("日次サマリ")
-        day = metrics["by_day"].copy()
-        day["date"] = pd.to_datetime(day["local_date"])
-        day["hours"] = (day["focus_seconds"] / 3600).round(2)
-        st.bar_chart(day.set_index("date")["hours"])
-        st.caption("棒グラフ：各日の学習時間（時間）")

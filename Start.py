@@ -23,7 +23,7 @@ def _list_bgm_prefixed(root: Path, prefix: str = "pomodoro_") -> list[str]:
 
 def run():
     st.set_page_config(page_title="ポモドーロ", page_icon="⏳")
-    st.title("⏳ ポモドーロ・タイマー（CSSドーナツ／1秒更新＋BGM）")
+    st.title("⏳ ポモドーロ・タイマー")
 
     # --- DB 初期化（最初に一度でOK）
     init_db()  # :contentReference[oaicite:4]{index=4}
@@ -40,7 +40,7 @@ def run():
     total_sec = minutes * 60
 
     # 2) BGM（プレフィックス方式：pomodoro_*.mp3 のみ再生対象）
-    st.subheader("BGM（任意）")
+    st.subheader("BGM")
     bgm_mode = st.radio(
         "ブラウザ仕様で自動再生不可：▶ を1回押してください",
         ["なし", "フォルダのMP3から選ぶ", "MP3をアップロードする"],
